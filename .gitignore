@@ -1,0 +1,10 @@
+.env
+/data/
+/deploy/
+/easydist
+/easydist.exe
+web/node_modules/
+web/.svelte-kit/
+web/build/
+testdata/godot/.godot/
+testdata/godot/*.uid

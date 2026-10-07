@@ -1,0 +1,10 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://main.gd" id="1"]
+
+[node name="Smoke" type="Label"]
+offset_left = 32.0
+offset_top = 32.0
+theme_override_font_sizes/font_size = 28
+text = "EasyDist Godot Web"
+script = ExtResource("1")
