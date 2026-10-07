@@ -1,0 +1,25 @@
+{
+  "name": "easydist-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --host 127.0.0.1",
+    "build": "vite build",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json"
+  },
+  "overrides": { "cookie": "^0.7.2" },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.70.3",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@xianii/design-system": "^2.4.0",
+    "daisyui": "^5.7.46",
+    "svelte": "^5.57.1",
+    "svelte-check": "^4.0.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.0.0",
+    "vite": "^8.3.1"
+  }
+}

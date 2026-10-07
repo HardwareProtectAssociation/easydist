@@ -1,0 +1,9 @@
+.git
+.env
+data
+deploy
+web/node_modules
+web/.svelte-kit
+web/build
+*.exe
+testdata

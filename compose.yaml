@@ -1,0 +1,26 @@
+services:
+  easydist:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    environment:
+      ADMIN_ORIGIN: ${ADMIN_ORIGIN:?Set ADMIN_ORIGIN in .env}
+      BASE_URL: ${BASE_URL:?Set BASE_URL in .env}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      MAX_ZIP_BYTES: ${MAX_ZIP_BYTES:-536870912}
+      MAX_EXTRACT_BYTES: ${MAX_EXTRACT_BYTES:-2147483648}
+      MAX_ZIP_ENTRIES: ${MAX_ZIP_ENTRIES:-10000}
+    volumes:
+      - data:/data
+      - ${DEPLOY_HOST_DIR:-./deploy}:/deploy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 35s
+
+volumes:
+  data:

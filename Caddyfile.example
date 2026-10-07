@@ -1,0 +1,17 @@
+# Merge these blocks into your EXISTING Caddy configuration.
+admin.example.com {
+	reverse_proxy 127.0.0.1:8080
+}
+
+games.example.com {
+	root * /srv/easydist/deploy/public
+	header {
+		Cross-Origin-Opener-Policy same-origin
+		Cross-Origin-Embedder-Policy require-corp
+		X-Content-Type-Options nosniff
+		Cache-Control "no-store"
+	}
+	@wasm path *.wasm
+	header @wasm Content-Type application/wasm
+	file_server
+}
