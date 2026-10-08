@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const testPassword = "a-long-test-password"
@@ -399,8 +400,8 @@ func TestDeploymentAndRecovery(t *testing.T) {
 		t.Fatal("old file retained")
 	}
 	entries, _ := os.ReadDir(filepath.Join(a.c.DeployDir, "releases"))
-	if len(entries) != 1 {
-		t.Fatal("old releases retained")
+	if len(entries) != 2 {
+		t.Fatal("old release not retained")
 	}
 	staging, _ := os.ReadDir(filepath.Join(a.c.DeployDir, "staging"))
 	if len(staging) != 0 {
@@ -491,5 +492,76 @@ func TestRevocationDuringUpload(t *testing.T) {
 				t.Fatal("revoked upload was published")
 			}
 		})
+	}
+}
+
+func TestVersionedGameEntryAndRetention(t *testing.T) {
+	a := testApp(t)
+	cookie := loginTest(t, a, "admin", testPassword)
+	tok := newToken(t, a, cookie, "game-cache")
+	entry := func(host, dist string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "https://"+host+"/game/"+dist, nil)
+		w := httptest.NewRecorder()
+		a.routes().ServeHTTP(w, r)
+		return w
+	}
+	expect(t, entry("games.example.test", tok.DistName), 404)
+	upload := func(body string) string {
+		archive := zipBytes(t, zipEntry{name: "index.html", body: body}, zipEntry{name: "index.pck", body: body})
+		expect(t, request(a, "POST", "/api/deploy", bytes.NewReader(archive), nil, tok.Secret), 200)
+		release, err := a.releaseTarget(filepath.Join(a.c.DeployDir, "public", tok.DistName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := entry("games.example.test", tok.DistName)
+		expect(t, w, 200)
+		if w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), `src="/_versions/`+filepath.Base(release)+`/"`) {
+			t.Fatalf("entry does not pin current release: %s", w.Body.String())
+		}
+		return release
+	}
+	first := upload("old")
+	// Existing installations have no version records; startup must adopt their current release.
+	if _, err := a.db.Exec("DELETE FROM releases"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.recoverDeployments(); err != nil {
+		t.Fatal(err)
+	}
+	second := upload("new")
+	if first == second {
+		t.Fatal("replacement reused a version URL")
+	}
+	if body, err := os.ReadFile(filepath.Join(first, "index.pck")); err != nil || string(body) != "old" {
+		t.Fatalf("replacement lost old resources: %v", err)
+	}
+	expect(t, entry("admin.example.test", tok.DistName), 404)
+	expect(t, entry("games.example.test", "bad_name"), 404)
+	expect(t, entry("games.example.test", "unknown-game"), 404)
+	// Recover a crash after link replacement but before recording retirement.
+	if _, err := a.db.Exec("UPDATE releases SET retired_at=0 WHERE name=?", filepath.Base(first)); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.recoverDeployments(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first); err != nil {
+		t.Fatalf("restart deleted retained version: %v", err)
+	}
+	if _, err := a.db.Exec("UPDATE releases SET retired_at=? WHERE name=?", time.Now().Add(-7*24*time.Hour).Unix(), filepath.Base(first)); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.recoverDeployments(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first); !os.IsNotExist(err) {
+		t.Fatalf("expired version not removed: %v", err)
+	}
+	upload("third")
+	expect(t, jsonRequest(a, "DELETE", fmt.Sprintf("/api/tokens/%d", tok.ID), nil, cookie), 200)
+	expect(t, entry("games.example.test", tok.DistName), 404)
+	entries, err := os.ReadDir(filepath.Join(a.c.DeployDir, "releases"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("token deletion left versions: %v", err)
 	}
 }

@@ -63,6 +63,7 @@ func openApp(c config) (*app, error) {
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, password TEXT NOT NULL, admin INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS tokens(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id), dist_name TEXT NOT NULL UNIQUE, hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, deleting INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS releases(name TEXT PRIMARY KEY, dist_name TEXT NOT NULL REFERENCES tokens(dist_name) ON DELETE CASCADE, retired_at INTEGER NOT NULL DEFAULT 0);
 DELETE FROM sessions WHERE expires <= unixepoch();`)
 	if err != nil {
 		db.Close()
@@ -158,6 +159,7 @@ func (a *app) routes() http.Handler {
 	m.HandleFunc("POST /api/admin/users/{id}/password", a.withUser(a.resetPassword))
 	m.HandleFunc("PATCH /api/admin/users/{id}", a.withUser(a.setDisabled))
 	m.HandleFunc("POST /api/deploy", a.deploy)
+	m.HandleFunc("GET /game/{dist}", a.gameEntry)
 	m.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { fail(w, 404, "接口不存在") })
 	m.Handle("/", http.FileServer(http.Dir(a.c.WebDir)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

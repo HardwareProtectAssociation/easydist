@@ -30,18 +30,37 @@ admin.example.com {
 }
 
 games.example.com {
-    root * /srv/easydist/deploy/public
-    header {
-        Cross-Origin-Opener-Policy same-origin
-        Cross-Origin-Embedder-Policy require-corp
-        X-Content-Type-Options nosniff
-        Cache-Control "public, no-cache"
-    }
-    @wasm path *.wasm
-    header @wasm Content-Type application/wasm
-    file_server {
-        precompressed gzip
-    }
+	root * /srv/easydist/deploy/public
+	header {
+		Cross-Origin-Opener-Policy same-origin
+		Cross-Origin-Embedder-Policy require-corp
+		X-Content-Type-Options nosniff
+		Cache-Control "public, no-cache"
+	}
+	@wasm path *.wasm
+	header @wasm Content-Type application/wasm
+	@version path_regexp version ^/_versions/([A-Za-z0-9_-]{43})(/.*)?$
+	handle @version {
+		root * /srv/easydist/deploy/releases
+		rewrite * /{re.version.1}{re.version.2}
+		header Cache-Control "public, max-age=604800, immutable" {
+			match status 2xx
+		}
+		file_server {
+			precompressed gzip
+		}
+	}
+	@entry path_regexp entry ^/([a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9]))(?:/|/index\.html)?$
+	handle @entry {
+		header >Cache-Control no-store
+		rewrite * /game/{re.entry.1}
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		file_server {
+			precompressed gzip
+		}
+	}
 }
 ```
 
@@ -50,11 +69,11 @@ caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Caddy 自动管理 HTTPS；公网证书需要 DNS 正确并允许访问 80/443 端口。`file_server` 不启用 `browse`；目录访问会跳转到带尾斜杠的 URL，随后提供 `index.html`。不要配置游戏的 SPA fallback，也不要把未知游戏路径转发到管理后台。Caddy 可以跟随系统生成的相对目录链接，链接目标位于同一部署卷内的 `releases/`。
+Caddy 自动管理 HTTPS；公网证书需要 DNS 正确并允许访问 80/443 端口。`file_server` 不启用 `browse`；固定入口（包括无尾斜杠和 `index.html` 地址）由 EasyDist 提供；版本目录提供 `index.html`。不要配置游戏的 SPA fallback，也不要把未知游戏路径转发到管理后台。Caddy 可以跟随系统生成的相对目录链接，链接目标位于同一部署卷内的 `releases/`。
 
-游戏使用固定资源文件名，因此缓存设置为 `public, no-cache`：浏览器可保存文件，每次复用前验证 ETag，未更新时返回 `304`，更新后重新下载。不要为这些固定地址设置长期 `immutable` 缓存。上传包无需提供 `.gz`：解压校验完成后，系统在正式发布之前顺序、流式压缩 HTML、JS、CSS、JSON、SVG、WASM 和 PCK 文件，只有压缩后更小才保留 `.gz` 副本。ZIP 中同名的 `.gz` 会从原文件重新生成，避免旧压缩文件与新游戏不一致。压缩失败或上传取消时不会替换已部署游戏。Caddy 根据浏览器的 `Accept-Encoding` 提供 `.gz` 文件，没有压缩副本时提供原文件，不进行实时压缩。
+上传 ZIP 和公开 URL 保持不变。固定游戏入口由 EasyDist 提供、不缓存，在同源全屏 iframe 中加载当前版本的 `/_versions/<版本ID>/` 页面，地址栏仍为原游戏 URL。版本目录中的相对资源 URL 自动包含版本 ID，Caddy 对成功响应设置 `public, max-age=604800, immutable`（7 天）；发布新版本后重新进入或刷新入口即可加载新版。直接使用旧版本 URL 会继续访问旧版，不会自动跟随更新。旧的非版本化资源地址仍使用 `public, no-cache`，只用于兼容已有链接。上传包无需提供 `.gz`：解压校验完成后，系统在正式发布之前顺序、流式压缩 HTML、JS、CSS、JSON、SVG、WASM 和 PCK 文件，只有压缩后更小才保留 `.gz` 副本。ZIP 中同名的 `.gz` 会从原文件重新生成，避免旧压缩文件与新游戏不一致。压缩失败或上传取消时不会替换已部署游戏。Caddy 根据浏览器的 `Accept-Encoding` 提供 `.gz` 文件，没有压缩副本时提供原文件，不进行实时压缩。
 
-如果现有 Caddy **运行在容器内**，将相同宿主机部署目录只读挂载到 Caddy，例如 `/srv/easydist/deploy:/srv/easydist/deploy:ro`，必须挂载整个目录以解析相对链接。将 EasyDist 与现有 Caddy 加入同一 Docker network，管理站点改为 `reverse_proxy easydist:8080`。可以使用单独的 Compose override 加入现有网络：
+如果现有 Caddy **运行在容器内**，将相同宿主机部署目录只读挂载到 Caddy，例如 `/srv/easydist/deploy:/srv/easydist/deploy:ro`，必须挂载整个目录以解析相对链接。将 EasyDist 与现有 Caddy 加入同一 Docker network，管理站点和游戏入口的代理均改为 `reverse_proxy easydist:8080`。可以使用单独的 Compose override 加入现有网络：
 
 ```yaml
 # compose.caddy-network.yaml
@@ -150,9 +169,9 @@ ZIP 可以在根目录包含 `index.html`，也可以将所有内容放在唯一
 
 导出文件需使用相对资源地址，确保游戏能在 `/dist-name/` 子路径加载。配置为 WASM 提供 `application/wasm`，为 Godot 多线程导出提供 COOP/COEP；跨域资源需要满足相应的 CORS/CORP 规则。生产访问使用 HTTPS。
 
-服务器使用 `Cache-Control: no-store` 减少覆盖后的旧资源缓存，但不会清除 Godot PWA 的 Service Worker 缓存；需要即时更新时关闭游戏导出的 PWA，或自行管理其缓存版本。管理台自身不注册 Service Worker。
+固定入口使用 `Cache-Control: no-store`，版本资源缓存 7 天。Godot PWA 的 Service Worker 缓存独立于 HTTP 缓存；需要即时更新时关闭游戏导出的 PWA，或自行管理其缓存版本。管理台自身不注册 Service Worker。
 
-发布通过完整解压目录和原子链接切换实现。单次文件请求不会读到半写入的文件，但一个正在加载的浏览器可能跨多次请求遇到两个版本；没有跨请求版本固定或回滚。旧版本文件在切换后清理，刷新可重新加载。
+发布通过完整解压目录和原子链接切换实现，入口将一次游戏加载固定到同一个版本。旧版本从被替换时起至少保留 7 天，发布和应用启动时清理到期版本；没有上传或重启时可能保留更久，需要为频繁发布预留磁盘。删除 token 会删除该游戏全部版本。已有部署会在升级启动时自动登记，无需重新上传。已运行的游戏不会自动切换版本；打开旧页面超过保留期后再请求未缓存文件可能失败。浏览器仍可能因存储配额清理大文件缓存，缓存期限不能保证文件实际保存满 7 天。
 
 游戏域名与后台分开，游戏脚本无法读取后台登录 Cookie。不同游戏路径仍共享同一个浏览器 origin（包括 localStorage、Service Worker 等），不能当作彼此隔离的不可信租户。请只允许可信用户部署。
 

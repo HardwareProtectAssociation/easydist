@@ -13,7 +13,26 @@ games.example.com {
 	}
 	@wasm path *.wasm
 	header @wasm Content-Type application/wasm
-	file_server {
-		precompressed gzip
+	@version path_regexp version ^/_versions/([A-Za-z0-9_-]{43})(/.*)?$
+	handle @version {
+		root * /srv/easydist/deploy/releases
+		rewrite * /{re.version.1}{re.version.2}
+		header Cache-Control "public, max-age=604800, immutable" {
+			match status 2xx
+		}
+		file_server {
+			precompressed gzip
+		}
+	}
+	@entry path_regexp entry ^/([a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9]))(?:/|/index\.html)?$
+	handle @entry {
+		header >Cache-Control no-store
+		rewrite * /game/{re.entry.1}
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		file_server {
+			precompressed gzip
+		}
 	}
 }
