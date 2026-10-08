@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 )
 
 type archiveError struct {
@@ -364,9 +365,16 @@ func (a *app) publish(t token, content, work string) error {
 	if err := os.Rename(content, release); err != nil {
 		return err
 	}
+	if _, err := a.db.Exec("INSERT INTO releases(name,dist_name) VALUES(?,?)", name, t.DistName); err != nil {
+		os.RemoveAll(release)
+		return err
+	}
 	published := false
 	defer func() {
 		if !published {
+			if _, err := a.db.Exec("DELETE FROM releases WHERE name=?", name); err != nil {
+				log.Print(err)
+			}
 			if err := os.RemoveAll(release); err != nil {
 				log.Print(err)
 			}
@@ -387,11 +395,12 @@ func (a *app) publish(t token, content, work string) error {
 		return err
 	}
 	if old != "" {
-		if err := os.RemoveAll(old); err != nil {
-			log.Printf("old release cleanup: %v", err)
+		if _, err := a.db.Exec("INSERT INTO releases(name,dist_name,retired_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET retired_at=excluded.retired_at", filepath.Base(old), t.DistName, time.Now().Unix()); err != nil {
+			return err
 		}
 	}
-	return nil
+	_, err = a.retainedReleases()
+	return err
 }
 func (a *app) recoverDeployments() error {
 	rows, err := a.db.Query("SELECT id,dist_name FROM tokens WHERE deleting=1")
@@ -444,7 +453,44 @@ func (a *app) recoverDeployments() error {
 		if !info.IsDir() {
 			return errors.New("release is not a directory")
 		}
-		refs[filepath.Base(target)] = true
+		name := filepath.Base(target)
+		if _, err := a.db.Exec("INSERT INTO releases(name,dist_name) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET retired_at=0", name, e.Name()); err != nil {
+			return err
+		}
+		refs[name] = true
+	}
+	rows, err = a.db.Query("SELECT name FROM releases WHERE retired_at=0")
+	if err != nil {
+		return err
+	}
+	inactive := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		if !refs[name] {
+			inactive = append(inactive, name)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	// A crash between switching the link and retiring its predecessor must retain both versions.
+	for _, name := range inactive {
+		if _, err := a.db.Exec("UPDATE releases SET retired_at=? WHERE name=?", time.Now().Unix(), name); err != nil {
+			return err
+		}
+	}
+	retained, err := a.retainedReleases()
+	if err != nil {
+		return err
+	}
+	for name := range retained {
+		refs[name] = true
 	}
 	for _, dir := range []string{"staging", "releases"} {
 		entries, err := os.ReadDir(filepath.Join(a.c.DeployDir, dir))
@@ -461,4 +507,45 @@ func (a *app) recoverDeployments() error {
 		}
 	}
 	return nil
+}
+
+// ponytail: Expire retired versions on publish/startup; add scheduled cleanup if disk pressure requires it.
+func (a *app) retainedReleases() (map[string]bool, error) {
+	rows, err := a.db.Query("SELECT name,retired_at FROM releases WHERE retired_at>0")
+	if err != nil {
+		return nil, err
+	}
+	retained := map[string]bool{}
+	expired := []string{}
+	for rows.Next() {
+		var name string
+		var retired int64
+		if err := rows.Scan(&name, &retired); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !releasePattern.MatchString(name) {
+			rows.Close()
+			return nil, errors.New("invalid stored release name")
+		}
+		if time.Now().Unix()-retired >= int64((7*24*time.Hour)/time.Second) {
+			expired = append(expired, name)
+		} else {
+			retained[name] = true
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range expired {
+		if err := os.RemoveAll(filepath.Join(a.c.DeployDir, "releases", name)); err != nil {
+			return nil, err
+		}
+		if _, err := a.db.Exec("DELETE FROM releases WHERE name=?", name); err != nil {
+			return nil, err
+		}
+	}
+	return retained, nil
 }

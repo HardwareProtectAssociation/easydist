@@ -177,6 +177,33 @@ func (a *app) finishDelete(t token) error {
 	if err != nil {
 		return err
 	}
+	rows, err := a.db.Query("SELECT name FROM releases WHERE dist_name=?", t.DistName)
+	if err != nil {
+		return err
+	}
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		if !releasePattern.MatchString(name) {
+			rows.Close()
+			return errors.New("invalid stored release name")
+		}
+		names = append(names, name)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := os.RemoveAll(filepath.Join(a.c.DeployDir, "releases", name)); err != nil {
+			return err
+		}
+	}
 	if target != "" {
 		if err := os.RemoveAll(target); err != nil {
 			return err
