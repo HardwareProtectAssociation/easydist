@@ -35,11 +35,13 @@ games.example.com {
         Cross-Origin-Opener-Policy same-origin
         Cross-Origin-Embedder-Policy require-corp
         X-Content-Type-Options nosniff
-        Cache-Control "no-store"
+        Cache-Control "public, no-cache"
     }
     @wasm path *.wasm
     header @wasm Content-Type application/wasm
-    file_server
+    file_server {
+        precompressed gzip
+    }
 }
 ```
 
@@ -49,6 +51,8 @@ sudo systemctl reload caddy
 ```
 
 Caddy 自动管理 HTTPS；公网证书需要 DNS 正确并允许访问 80/443 端口。`file_server` 不启用 `browse`；目录访问会跳转到带尾斜杠的 URL，随后提供 `index.html`。不要配置游戏的 SPA fallback，也不要把未知游戏路径转发到管理后台。Caddy 可以跟随系统生成的相对目录链接，链接目标位于同一部署卷内的 `releases/`。
+
+游戏使用固定资源文件名，因此缓存设置为 `public, no-cache`：浏览器可保存文件，每次复用前验证 ETag，未更新时返回 `304`，更新后重新下载。不要为这些固定地址设置长期 `immutable` 缓存。上传包无需提供 `.gz`：解压校验完成后，系统在正式发布之前顺序、流式压缩 HTML、JS、CSS、JSON、SVG、WASM 和 PCK 文件，只有压缩后更小才保留 `.gz` 副本。ZIP 中同名的 `.gz` 会从原文件重新生成，避免旧压缩文件与新游戏不一致。压缩失败或上传取消时不会替换已部署游戏。Caddy 根据浏览器的 `Accept-Encoding` 提供 `.gz` 文件，没有压缩副本时提供原文件，不进行实时压缩。
 
 如果现有 Caddy **运行在容器内**，将相同宿主机部署目录只读挂载到 Caddy，例如 `/srv/easydist/deploy:/srv/easydist/deploy:ro`，必须挂载整个目录以解析相对链接。将 EasyDist 与现有 Caddy 加入同一 Docker network，管理站点改为 `reverse_proxy easydist:8080`。可以使用单独的 Compose override 加入现有网络：
 

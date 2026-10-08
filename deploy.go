@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"errors"
@@ -155,6 +156,9 @@ func extractZIP(ctx context.Context, archive, dest string, maxBytes int64, maxEn
 			return closeErr
 		}
 	}
+	if err := precompress(ctx, dest); err != nil {
+		return err
+	}
 	// Persist directory entries before publishing the link.
 	return filepath.WalkDir(dest, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -162,6 +166,56 @@ func extractZIP(ctx context.Context, archive, dest string, maxBytes int64, maxEn
 		}
 		if d.IsDir() {
 			return syncDir(p)
+		}
+		return nil
+	})
+}
+
+func precompress(ctx context.Context, dir string) error {
+	return filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(p)) {
+		case ".html", ".js", ".css", ".json", ".svg", ".wasm", ".pck":
+		default:
+			return nil
+		}
+		in, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		original, err := in.Stat()
+		if err != nil {
+			return err
+		}
+		if info, err := os.Stat(p + ".gz"); err == nil && info.IsDir() {
+			return badZIP("压缩文件路径与目录冲突")
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		out, err := os.OpenFile(p+".gz", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		if err != nil {
+			return err
+		}
+		gz := gzip.NewWriter(out)
+		_, copyErr := io.Copy(gz, contextReader{ctx, in})
+		if err := errors.Join(copyErr, gz.Close(), out.Sync(), out.Close()); err != nil {
+			return err
+		}
+		compressed, err := os.Stat(p + ".gz")
+		if err != nil {
+			return err
+		}
+		if compressed.Size() >= original.Size() {
+			return os.Remove(p + ".gz")
 		}
 		return nil
 	})

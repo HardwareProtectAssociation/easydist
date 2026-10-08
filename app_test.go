@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -329,6 +330,50 @@ func TestZIPValidation(t *testing.T) {
 			t.Fatal("invalid zip accepted")
 		}
 	})
+}
+
+func TestDeploymentPrecompression(t *testing.T) {
+	a := testApp(t)
+	c := loginTest(t, a, "admin", testPassword)
+	tok := newToken(t, a, c, "compressed-game")
+	public := filepath.Join(a.c.DeployDir, "public", tok.DistName)
+	for _, body := range []string{strings.Repeat("old-game", 1024), strings.Repeat("new-game", 1024)} {
+		archive := zipBytes(t, zipEntry{name: "index.html", body: body},
+			zipEntry{name: "nested/game.wasm", body: body}, zipEntry{name: "game.pck", body: body},
+			zipEntry{name: "game.pck.gz", body: "stale compressed data"},
+			zipEntry{name: "small.js", body: "x"}, zipEntry{name: "image.png", body: body})
+		expect(t, request(a, "POST", "/api/deploy", bytes.NewReader(archive), nil, tok.Secret), 200)
+		for _, name := range []string{"index.html", "nested/game.wasm", "game.pck"} {
+			compressed, err := os.ReadFile(filepath.Join(public, name+".gz"))
+			if err != nil || len(compressed) >= len(body) {
+				t.Fatalf("missing or ineffective compression for %s: %v", name, err)
+			}
+			gz, err := gzip.NewReader(bytes.NewReader(compressed))
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := io.ReadAll(gz)
+			gz.Close()
+			if err != nil || string(decoded) != body {
+				t.Fatalf("compressed content differs for %s: %v", name, err)
+			}
+		}
+		for _, name := range []string{"small.js.gz", "image.png.gz"} {
+			if _, err := os.Stat(filepath.Join(public, name)); !os.IsNotExist(err) {
+				t.Fatalf("unexpected compression for %s: %v", name, err)
+			}
+		}
+	}
+	conflict := zipBytes(t, zipEntry{name: "index.html", body: "replacement"}, zipEntry{name: "index.html.gz/", mode: os.ModeDir | 0755})
+	expect(t, request(a, "POST", "/api/deploy", bytes.NewReader(conflict), nil, tok.Secret), 400)
+	if body, err := os.ReadFile(filepath.Join(public, "index.html")); err != nil || string(body) != strings.Repeat("new-game", 1024) {
+		t.Fatalf("compression failure replaced existing game: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := precompress(ctx, public); err != context.Canceled {
+		t.Fatalf("cancelled compression: %v", err)
+	}
 }
 
 func TestDeploymentAndRecovery(t *testing.T) {
