@@ -18,7 +18,7 @@ games.example.com {
 		root * /srv/easydist/deploy/releases
 		rewrite * /{re.version.1}{re.version.2}
 		header Cache-Control "public, max-age=604800, immutable" {
-			match status 2xx
+			match status 2xx 304
 		}
 		file_server {
 			precompressed gzip
