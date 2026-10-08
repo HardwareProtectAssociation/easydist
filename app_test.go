@@ -495,6 +495,77 @@ func TestRevocationDuringUpload(t *testing.T) {
 	}
 }
 
+func TestHourlyReleaseCleanup(t *testing.T) {
+	a := testApp(t)
+	cookie := loginTest(t, a, "admin", testPassword)
+	tok := newToken(t, a, cookie, "game-cleanup")
+	var releases []string
+	for _, body := range []string{"expired", "recent", "current"} {
+		archive := zipBytes(t, zipEntry{name: "index.html", body: body})
+		expect(t, request(a, "POST", "/api/deploy", bytes.NewReader(archive), nil, tok.Secret), 200)
+		release, err := a.releaseTarget(filepath.Join(a.c.DeployDir, "public", tok.DistName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		releases = append(releases, release)
+	}
+	for i, age := range []time.Duration{8 * 24 * time.Hour, 6 * 24 * time.Hour} {
+		if _, err := a.db.Exec("UPDATE releases SET retired_at=? WHERE name=?", time.Now().Add(-age).Unix(), filepath.Base(releases[i])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.cleanupReleases(ctx, ticks)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("cleanup did not stop on cancellation")
+		}
+	})
+	func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		select {
+		case ticks <- time.Now():
+		case <-time.After(3 * time.Second):
+			t.Fatal("cleanup did not accept scheduled tick")
+		}
+		if _, err := os.Stat(releases[0]); err != nil {
+			t.Fatalf("cleanup bypassed mutation lock: %v", err)
+		}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var count int
+		if err := a.db.QueryRow("SELECT count(*) FROM releases WHERE name=?", filepath.Base(releases[0])).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("scheduled cleanup did not remove expired record")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := os.Stat(releases[0]); !os.IsNotExist(err) {
+		t.Fatalf("scheduled cleanup left expired files: %v", err)
+	}
+	for i, body := range []string{"recent", "current"} {
+		data, err := os.ReadFile(filepath.Join(releases[i+1], "index.html"))
+		if err != nil || string(data) != body {
+			t.Fatalf("cleanup changed %s release: %v", body, err)
+		}
+	}
+}
+
 func TestVersionedGameEntryAndRetention(t *testing.T) {
 	a := testApp(t)
 	cookie := loginTest(t, a, "admin", testPassword)

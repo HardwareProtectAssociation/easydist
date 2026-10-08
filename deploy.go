@@ -509,7 +509,26 @@ func (a *app) recoverDeployments() error {
 	return nil
 }
 
-// ponytail: Expire retired versions on publish/startup; add scheduled cleanup if disk pressure requires it.
+func (a *app) cleanupReleases(ctx context.Context, ticks <-chan time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			a.mu.Lock()
+			if ctx.Err() != nil {
+				a.mu.Unlock()
+				return
+			}
+			_, err := a.retainedReleases()
+			a.mu.Unlock()
+			if err != nil {
+				log.Printf("release cleanup failed: %v", err)
+			}
+		}
+	}
+}
+
 func (a *app) retainedReleases() (map[string]bool, error) {
 	rows, err := a.db.Query("SELECT name,retired_at FROM releases WHERE retired_at>0")
 	if err != nil {

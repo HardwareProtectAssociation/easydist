@@ -91,7 +91,17 @@ func main() {
 	}
 	srv := &http.Server{Addr: c.Listen, Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Minute, WriteTimeout: 15 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	cleanupDone := make(chan struct{})
+	go func() {
+		defer close(cleanupDone)
+		a.cleanupReleases(ctx, ticker.C)
+	}()
+	defer func() {
+		stop()
+		<-cleanupDone
+	}()
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
