@@ -9,9 +9,11 @@ games.example.com {
 		Cross-Origin-Opener-Policy same-origin
 		Cross-Origin-Embedder-Policy require-corp
 		X-Content-Type-Options nosniff
-		Cache-Control "no-store"
+		Cache-Control "public, no-cache"
 	}
 	@wasm path *.wasm
 	header @wasm Content-Type application/wasm
-	file_server
+	file_server {
+		precompressed gzip
+	}
 }
